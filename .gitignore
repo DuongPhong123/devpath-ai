@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Streamlit secrets (KHÔNG commit API key!)
+.streamlit/secrets.toml
+
+# Progress data (local only)
+data/progress.json
+
+# Virtual env
+venv/
+.venv/

@@ -2,20 +2,24 @@ import os
 import streamlit as st
 
 try:
-    import anthropic
-    _CLIENT = None
+    import google.generativeai as genai
+    _MODEL = None
 
-    def get_client():
-        global _CLIENT
-        if _CLIENT is None:
-            api_key = os.environ.get("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_API_KEY", "")
+    def get_model():
+        global _MODEL
+        if _MODEL is None:
+            api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
             if not api_key:
                 return None
-            _CLIENT = anthropic.Anthropic(api_key=api_key)
-        return _CLIENT
+            genai.configure(api_key=api_key)
+            _MODEL = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=SYSTEM_PROMPT,
+            )
+        return _MODEL
 
 except ImportError:
-    def get_client():
+    def get_model():
         return None
 
 
@@ -35,37 +39,47 @@ Quy tắc:
 """
 
 
+def _to_gemini_history(messages: list[dict]) -> list[dict]:
+    history = []
+    for m in messages:
+        role = "model" if m["role"] == "assistant" else "user"
+        history.append({"role": role, "parts": [m["content"]]})
+    return history
+
+
 def stream_chat(messages: list[dict], lesson_context: str = None) -> str:
-    client = get_client()
-    if not client:
-        yield "⚠️ Chưa cấu hình ANTHROPIC_API_KEY. Vào `.streamlit/secrets.toml` và thêm key nhé anh!"
+    model = get_model()
+    if not model:
+        yield "⚠️ Chưa cấu hình GEMINI_API_KEY. Vào Streamlit Cloud → Settings → Secrets và thêm key nhé anh!"
         return
 
-    system = SYSTEM_PROMPT
+    system_extra = ""
     if lesson_context:
-        system += f"\n\nBài học hiện tại:\n{lesson_context}"
+        system_extra = f"\n\nBài học hiện tại:\n{lesson_context}"
+
+    history = _to_gemini_history(messages[:-1])
+    last_msg = messages[-1]["content"] + system_extra
 
     try:
-        with client.messages.stream(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1500,
-            system=system,
-            messages=messages,
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
-    except anthropic.AuthenticationError:
-        yield "❌ API key không hợp lệ. Kiểm tra lại ANTHROPIC_API_KEY trong secrets.toml nhé anh."
-    except anthropic.RateLimitError:
-        yield "⏳ Đang bận quá, thử lại sau 1 phút anh nhé!"
+        chat = model.start_chat(history=history)
+        response = chat.send_message(last_msg, stream=True)
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
     except Exception as e:
-        yield f"❌ Lỗi kết nối AI: {str(e)}"
+        err = str(e)
+        if "API_KEY" in err.upper() or "403" in err:
+            yield "❌ API key không hợp lệ. Kiểm tra lại GEMINI_API_KEY trong Secrets nhé anh."
+        elif "quota" in err.lower() or "429" in err:
+            yield "⏳ Đang bận quá (quota), thử lại sau 1 phút anh nhé!"
+        else:
+            yield f"❌ Lỗi kết nối AI: {err}"
 
 
 def review_code(code: str, task_description: str) -> str:
-    client = get_client()
-    if not client:
-        return "⚠️ Chưa cấu hình ANTHROPIC_API_KEY."
+    model = get_model()
+    if not model:
+        return "⚠️ Chưa cấu hình GEMINI_API_KEY."
 
     prompt = f"""Anh vừa viết đoạn code Python sau để giải bài tập:
 
@@ -84,21 +98,16 @@ Hãy review code theo 3 phần:
 Giải thích đơn giản, thân thiện nhé!"""
 
     try:
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
         return f"❌ Không thể review code: {str(e)}"
 
 
 def explain_error(code: str, error_msg: str) -> str:
-    client = get_client()
-    if not client:
-        return "⚠️ Chưa cấu hình ANTHROPIC_API_KEY."
+    model = get_model()
+    if not model:
+        return "⚠️ Chưa cấu hình GEMINI_API_KEY."
 
     prompt = f"""Code Python của anh bị lỗi:
 
@@ -117,12 +126,7 @@ Giải thích:
 3. Cách tránh lỗi này trong tương lai"""
 
     try:
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=800,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
         return f"❌ Lỗi: {str(e)}"
